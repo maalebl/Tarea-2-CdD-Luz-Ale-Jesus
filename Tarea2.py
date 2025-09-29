@@ -334,6 +334,18 @@ plt.ylabel("Real")
 plt.tight_layout()
 plt.show()
 
+######
+######
+## VALIDACIÓN CRUZADA CON FISHER ###
+
+#aqui
+
+
+
+
+
+
+
 
 
 # VALIDACIÃ“N CRUZADA COMPARATIVA
