@@ -4,6 +4,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from matplotlib.colors import ListedColormap
+from scipy.stats import multivariate_normal
 
 def generar_datos_aleatorios(mu0, mu1, sigma0, sigma1, n=100, pi0=0.5):
     n0 = int(n * pi0)
@@ -38,44 +39,99 @@ def plot_de_decision_boundary(X, y, clf, title=''):
 
 def configurar_escenario(dificultad='facil', covarianzas_iguales=True):
     p = 2
-
     if dificultad == 'facil':
         mu0 = np.zeros(p)
         mu1 = np.ones(p) * 3
     elif dificultad == 'medio':
         mu0 = np.zeros(p)
         mu1 = np.ones(p) * 1.5
-    else:  
+    else:  # difícil
         mu0 = np.zeros(p)
         mu1 = np.ones(p) * 0.5
 
-    # Covarianzas
     sigma0 = np.array([[1, 0.5], [0.5, 1]])
-    
-    if covarianzas_iguales:
-        sigma1 = sigma0
-    else:
-        sigma1 = np.array([[1, -0.5], [-0.5, 1.5]])
+    sigma1 = sigma0 if covarianzas_iguales else np.array([[1, -0.5], [-0.5, 1.5]])
 
     return mu0, mu1, sigma0, sigma1
 
-# Parámetros
-dificultad = 'medio'  # Eleccion de Dificultad
-cov_iguales = False   # True para LDA, False para QDA
-n = 200               # Numero de muestra
-pi0 = 0.5              
-k = 4                 # Numero de vecinos
+
+class BayesOptimo:
+    def __init__(self, mu0, mu1, sigma0, sigma1, pi0=0.5):
+        self.pi0 = pi0
+        self.pi1 = 1 - pi0
+        self.rv0 = multivariate_normal(mean=mu0, cov=sigma0)
+        self.rv1 = multivariate_normal(mean=mu1, cov=sigma1)
+
+    def predict(self, X):
+        post0 = self.pi0 * self.rv0.pdf(X)
+        post1 = self.pi1 * self.rv1.pdf(X)
+        return (post1 > post0).astype(int)
+    
+
+class FisherClassifier:
+    def __init__(self, mu0, mu1, sigma0, sigma1):
+        Sw = sigma0 + sigma1
+        self.w = np.linalg.inv(Sw).dot(mu1 - mu0)
+        m0 = mu0.dot(self.w)
+        m1 = mu1.dot(self.w)
+        self.threshold = 0.5 * (m0 + m1)
+
+    def predict(self, X):
+        z = X.dot(self.w)   
+        return (z > self.threshold).astype(int)
+
+
+# =====================
+# Experimento
+# =====================
+
+
+
+#-----------Parametros------------
+dificultad = 'medio'
+cov_iguales = True
+n = 200
+pi0 = 0.5
+k = 4
+
+#----------Almacenamiento de precisión--------
+Muestras=5
+LDA_datos_k_nn=np.zeros(Muestras)
+QDA_datos_k_nn=np.zeros(Muestras)
+Bayes_datos=np.zeros(Muestras)
+#---------------------------------------------
+
+
 
 mu0, mu1, sigma0, sigma1 = configurar_escenario(dificultad, cov_iguales)
 X, y = generar_datos_aleatorios(mu0, mu1, sigma0, sigma1, n=n, pi0=pi0)
 
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
 
+# Clasificador k-NN
 knn = KNeighborsClassifier(n_neighbors=k)
 knn.fit(X_train, y_train)
+y_pred_knn = knn.predict(X_test)
+acc_knn = accuracy_score(y_test, y_pred_knn)
+print(f"k-NN (k={k}): Precisión = {acc_knn:.3f}")
 
-y_pred = knn.predict(X_test)
-acc = accuracy_score(y_test, y_pred)
-print(f"Precisión (k={k}, dificultad={dificultad}, cov_iguales={cov_iguales}): {acc:.3f}")
+plot_de_decision_boundary(X_test, y_test, knn, title=f"k-NN (k={k}) - Precisión={acc_knn:.2f}")
 
-plot_de_decision_boundary(X_test, y_test, knn, title=f"k-NN (k={k}) - Precisión={acc:.2f}")
+# --- Bayes Óptimo ---
+bayes = BayesOptimo(mu0, mu1, sigma0, sigma1, pi0=pi0)
+y_pred_bayes = bayes.predict(X_test)
+acc_bayes = accuracy_score(y_test, y_pred_bayes)
+
+print(f"Bayes Óptimo (densidades verdaderas): Precisión = {acc_bayes:.3f}")
+plot_de_decision_boundary(X_test, y_test, bayes,
+                          title=f"Bayes Óptimo - Precisión={acc_bayes:.2f}")
+
+# --- Fisher ---
+fisher = FisherClassifier(mu0, mu1, sigma0, sigma1)
+y_pred_fisher = fisher.predict(X_test)
+acc_fisher = accuracy_score(y_test, y_pred_fisher)
+
+print(f"Fisher: Precisión = {acc_fisher:.3f}")
+plot_de_decision_boundary(X_test, y_test, fisher,
+                          title=f"Fisher - Precisión={acc_fisher:.2f}")
+
