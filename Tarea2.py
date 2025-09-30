@@ -6,9 +6,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
-from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_validate
 from sklearn.naive_bayes import GaussianNB
-from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score, roc_auc_score,balanced_accuracy_score
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis, QuadraticDiscriminantAnalysis
 from sklearn.neighbors import KNeighborsClassifier
 from matplotlib.colors import LinearSegmentedColormap
@@ -336,9 +336,56 @@ plt.show()
 
 ######
 ######
-## VALIDACI�N CRUZADA CON FISHER ###
+## VALIDACI�N CRUZADA CON FISHER ###
 
-#aqui
+# Matrices para CV (usa TODO el dataset preprocesado)
+X = df_listo.drop(columns='y').values
+y = df_listo['y'].astype(int).values
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# --- Modelos nativos de scikit-learn ---
+models = {
+    "Naive Bayes": GaussianNB(),
+    "LDA": LinearDiscriminantAnalysis(),
+    "QDA": QuadraticDiscriminantAnalysis(reg_param=0.1),
+    "k-NN (k=5)": KNeighborsClassifier(n_neighbors=5)
+}
+
+scorers = {
+    "acc": "accuracy",
+    "bacc": "balanced_accuracy",
+    "f1w": "f1_weighted",
+    "auc": "roc_auc"   # usa predict_proba/decision_function según el modelo
+}
+
+print("\n=== Validación Cruzada 5-fold (scikit-learn) ===")
+for name, model in models.items():
+    res = cross_validate(model, X, y, cv=cv, scoring=scorers, n_jobs=-1, return_train_score=False)
+    print(f"{name:15s} | Acc={res['test_acc'].mean():.3f}±{res['test_acc'].std():.3f} "
+          f"| BAcc={res['test_bacc'].mean():.3f} | F1w={res['test_f1w'].mean():.3f} "
+          f"| AUC={res['test_auc'].mean():.3f}")
+
+# --- Fisher (desde cero) sin clases: CV manual ---
+accs, baccs, f1ws, aucs = [], [], [], []
+for tr_idx, te_idx in cv.split(X, y):
+    Xtr, Xte = X[tr_idx], X[te_idx]
+    ytr, yte = y[tr_idx], y[te_idx]
+
+    # Ajuste Fisher en el fold
+    a, umbral_mid, m0, m1 = ajustar_fisher(Xtr, ytr, alpha=1e-3)
+    thr = umbral_fisher_con_priores(a, m0, m1, Xtr, ytr, priors='empirical')  # usa priores empíricas
+    yhat = predecir_fisher(Xte, a, thr)
+    scores = puntajes_fisher(Xte, a)  # score continuo para AUC
+
+    # Métricas del fold
+    accs.append(accuracy_score(yte, yhat))
+    baccs.append(balanced_accuracy_score(yte, yhat))
+    f1ws.append(f1_score(yte, yhat, average='weighted'))
+    aucs.append(roc_auc_score(yte, scores))
+
+print("\nFisher  | Acc={:.3f}±{:.3f} | BAcc={:.3f} | F1w={:.3f} | AUC={:.3f}"
+      .format(np.mean(accs), np.std(accs), np.mean(baccs), np.mean(f1ws), np.mean(aucs)))
 
 
 
