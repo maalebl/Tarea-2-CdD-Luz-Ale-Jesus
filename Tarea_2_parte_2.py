@@ -9,6 +9,8 @@ from sklearn.metrics import accuracy_score
 from matplotlib.colors import ListedColormap
 from scipy.stats import norm, multivariate_normal
 import seaborn as sns
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.model_selection import RepeatedStratifiedKFold, StratifiedKFold, cross_val_score
 
 # Función para generar el vector "y" de datos binarios
 def vector_y(n,pi_0) :
@@ -152,6 +154,68 @@ plot_de_decision_boundary(X_test, y_test, fisher,
 
 ################## AQUÍ LA PARTE NUEVA CON LOS DEMAS RESULTADOS ######################
 
+class Fisher1D(BaseEstimator, ClassifierMixin):
+    """
+    Criterio de Fisher: proyección 1D + umbral escogido para minimizar
+    el error en entrenamiento.
+    """
+    def __init__(self):
+        self.w_ = None
+        self.t_ = None
+        self.flip_ = 1  # +1 si clase 1 es z grande; -1 si al revés
+
+    def fit(self, X, y):
+        X0 = X[y==0]; X1 = X[y==1]
+        mu0 = X0.mean(axis=0); mu1 = X1.mean(axis=0)
+
+        # Covarianzas muestrales 
+        S0 = np.cov(X0, rowvar=False, bias=False)
+        S1 = np.cov(X1, rowvar=False, bias=False)
+        Sw = S0 + S1
+
+        # Regularización leve si Sw es singular (por si acaso)
+        eps = 1e-8
+        Sw = Sw + eps*np.eye(Sw.shape[0])
+
+        # Dirección de Fisher
+        self.w_ = np.linalg.solve(Sw, (mu1 - mu0))
+
+        # Proyección y orientación
+        z = X @ self.w_
+        z0 = z[y==0]; z1 = z[y==1]
+        m0, m1 = z0.mean(), z1.mean()
+        self.flip_ = 1 if (m1 >= m0) else -1
+        z_flip = self.flip_ * z
+        y_flip = y  # no cambiamos etiquetas; sólo volteamos el eje
+
+        # Umbral que minimiza error en entrenamiento
+        ord_idx = np.argsort(z_flip)
+        z_sorted = z_flip[ord_idx]
+        y_sorted = y_flip[ord_idx]
+
+        # Candidatos: puntos medios entre observaciones adyacentes de clases distintas
+        cand = []
+        for i in range(len(z_sorted)-1):
+            if y_sorted[i] != y_sorted[i+1]:
+                cand.append(0.5*(z_sorted[i] + z_sorted[i+1]))
+
+        if not cand:
+            # Si por alguna razón no hay mezcla, usa punto medio de medias
+            self.t_ = 0.5*(self.flip_*m0 + self.flip_*m1)
+        else:
+            cand = np.array(cand)
+            # Evalúa error 0-1 en train para cada candidato
+            errs = []
+            for t in cand:
+                y_hat = (z_flip >= t).astype(int)
+                errs.append(np.mean(y_hat != y))
+            self.t_ = cand[int(np.argmin(errs))]
+
+        return self
+
+    def predict(self, X):
+        z = self.flip_ * (X @ self.w_)
+        return (z >= self.t_).astype(int)
 
 
 
@@ -192,6 +256,7 @@ def Riesgos(n, p, pi_0, mu0, mu1, Sigma0, Sigma1):
         "Naive Bayes": GaussianNB(),
         "LDA": LinearDiscriminantAnalysis(),
         "QDA": QuadraticDiscriminantAnalysis(),
+        "Fisher (1D + umbral)": Fisher1D(),
     }
     
     resultados = {}
