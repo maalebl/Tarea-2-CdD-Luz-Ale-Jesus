@@ -602,4 +602,240 @@ ResultadosCD(p, pi_0, mu0, mu1, Sigma0, Sigma1)
 ResultadosCD_kNN(p, pi_0, mu0, mu1, Sigma0, Sigma1)
 
 
+#######RIESGOS ESTIMADOS ######
+def riesgos_cv_modelos(n, p, pi_0, mu0, mu1, Sigma0, Sigma1,
+                       k_folds=5, n_repeats=1, R=20, random_state=123):
+    """
+    Estima L_cv(g) con K-fold estratificado (con repetición opcional).
+    Genera R datasets nuevos; en cada uno hace CV y promedia riesgos.
+    """
+    modelos = {
+        "Naive Bayes": GaussianNB(),
+        "LDA": LinearDiscriminantAnalysis(),
+        "QDA": QuadraticDiscriminantAnalysis(),
+        "Fisher (1D + umbral)": Fisher1D(),   # ¡asegúrate que esté definido a nivel módulo!
+    }
+    rng = np.random.default_rng(random_state)
+    riesgos_por_modelo = {m: [] for m in modelos}
+
+    for r in range(R):
+        y = vector_y(n, pi_0)
+        X = vector_x(n, p, y, mu0, mu1, Sigma0, Sigma1)
+
+        cv = RepeatedStratifiedKFold(
+            n_splits=k_folds, n_repeats=n_repeats,
+            random_state=int(rng.integers(1e9))
+        )
+        for nombre, modelo in modelos.items():
+            # ¡No paralelizar con estimadores propios! y captura errores como NaN
+            acc = cross_val_score(
+                modelo, X, y, scoring="accuracy", cv=cv,
+                n_jobs=None,            # <--- CAMBIO CLAVE
+                error_score=np.nan      # <--- CAMBIO CLAVE
+            )
+            riesgos_por_modelo[nombre].append(1.0 - np.nanmean(acc))  # <--- nan-robusto
+
+    filas = []
+    for nombre, vals in riesgos_por_modelo.items():
+        m = float(np.nanmean(vals)) if len(vals) else np.nan
+        s = float(np.nanstd(vals))  if len(vals) else np.nan
+        filas.append({"Modelo": nombre, "n": n, "mean": m, "std": s})
+    return pd.DataFrame(filas)
+
+
+
+
+def Resultados_cv(p, pi_0, mu0, mu1, Sigma0, Sigma1,
+                  n_grid=[50,100,200,500], k_folds=5, n_repeats=1, R=20):
+    frames = []
+    for n in n_grid:
+        frames.append(riesgos_cv_modelos(n, p, pi_0, mu0, mu1, Sigma0, Sigma1,
+                                         k_folds=k_folds, n_repeats=n_repeats, R=R))
+    df_cv = pd.concat(frames, ignore_index=True)
+    return df_cv
+
+def Resultados_MC_both(p, pi_0, mu0, mu1, Sigma0, Sigma1, n_grid=[50,100,200,500]):
+    frames = []
+    for n in n_grid:
+        df_eq  = Riesgos(n, p, pi_0, mu0, mu1, Sigma0, Sigma0)
+        df_eq["Escenario"] = "Σ0=Σ1"
+        df_neq = Riesgos(n, p, pi_0, mu0, mu1, Sigma0, Sigma1)
+        df_neq["Escenario"] = "Σ0≠Σ1"
+        frames += [df_eq, df_neq]
+    df_mc = pd.concat(frames, ignore_index=True)
+    return df_mc.sort_values(["Escenario","Modelo","n"]).reset_index(drop=True)
+
+def Resultados_CV_both(p, pi_0, mu0, mu1, Sigma0, Sigma1,
+                       n_grid=[50,100,200,500], k_folds=5, n_repeats=1, R=20):
+    frames = []
+    for n in n_grid:
+        dfeq  = riesgos_cv_modelos(n, p, pi_0, mu0, mu1, Sigma0, Sigma0,
+                                   k_folds=k_folds, n_repeats=n_repeats, R=R)
+        dfeq["Escenario"] = "Σ0=Σ1"
+        dfne = riesgos_cv_modelos(n, p, pi_0, mu0, mu1, Sigma0, Sigma1,
+                                   k_folds=k_folds, n_repeats=n_repeats, R=R)
+        dfne["Escenario"] = "Σ0≠Σ1"
+        frames += [dfeq, dfne]
+    df_cv = pd.concat(frames, ignore_index=True)
+    return df_cv.sort_values(["Escenario","Modelo","n"]).reset_index(drop=True)
+
+def errores_bayes_por_escenario(mu0, mu1, Sigma0, Sigma1, pi_0, n_sim=250000):
+    err_eq  = bayes_error_equal_cov(mu0, mu1, Sigma0, pi_0)
+    err_neq = bayes_error_montecarlo(mu0, mu1, Sigma0, Sigma1, pi_0, n_sim=n_sim)
+    return {"Σ0=Σ1": err_eq, "Σ0≠Σ1": err_neq}
+
+def plot_por_modelo_y_escenario(df_mc, df_cv, err_bayes_dict, modelo):
+    for esc in ["Σ0=Σ1","Σ0≠Σ1"]:
+        d1 = df_mc[(df_mc["Modelo"]==modelo) & (df_mc["Escenario"]==esc)].sort_values("n")
+        d2 = df_cv[(df_cv["Modelo"]==modelo) & (df_cv["Escenario"]==esc)].sort_values("n")
+        if d1.empty or d2.empty: 
+            continue
+        plt.figure(figsize=(7,5))
+        plt.plot(d1["n"], d1["mean"], "-o", label="Monte Carlo")
+        plt.errorbar(d1["n"], d1["mean"], yerr=d1["std"], fmt="none", capsize=4)
+        plt.plot(d2["n"], d2["mean"], "--x", label="CV estratificada")
+        plt.errorbar(d2["n"], d2["mean"], yerr=d2["std"], fmt="none", capsize=4)
+        plt.axhline(err_bayes_dict[esc], ls="--", lw=2, color="tab:red", label="Error de Bayes")
+        plt.title(f"{modelo} — {esc}")
+        plt.xlabel("Tamaño de muestra (n)")
+        plt.ylabel("Riesgo estimado")
+        plt.legend(); plt.grid(alpha=0.25); plt.tight_layout(); plt.show()
+        
+ # genera resultados para ambos escenarios
+
+DIFICULTADES = {
+    "Fácil":   (np.array([2, 2]), np.array([5.0, 5.0])),
+    "Medio":   (np.array([2, 2]), np.array([3.5, 3.5])),
+    "Difícil": (np.array([2, 2]), np.array([1.5, 1.5])),
+}
+
+def Resultados_MC_CV_por_dificultad(
+    p, pi_0, Sigma0, Sigma1, dificultades=DIFICULTADES,
+    n_grid=(50,100,200,500), k_folds=5, n_repeats=1, R=20, n_sim_bayes=250000
+):
+    frames_mc, frames_cv = [], []
+    err_bayes = {}  # clave: (escenario, dificultad) -> valor
+
+    for dif_lbl, (mu0, mu1) in dificultades.items():
+        # --- Escenario 1: Σ0 = Σ1 ---
+        for n in n_grid:
+            d_mc = Riesgos(n, p, pi_0, mu0, mu1, Sigma0, Sigma0)
+            d_mc["Escenario"] = "Σ0=Σ1"; d_mc["Dificultad"] = dif_lbl
+            frames_mc.append(d_mc)
+
+            d_cv = riesgos_cv_modelos(n, p, pi_0, mu0, mu1, Sigma0, Sigma0,
+                                      k_folds=k_folds, n_repeats=n_repeats, R=R)
+            d_cv["Escenario"] = "Σ0=Σ1"; d_cv["Dificultad"] = dif_lbl
+            frames_cv.append(d_cv)
+
+        err_bayes[("Σ0=Σ1", dif_lbl)] = bayes_error_equal_cov(mu0, mu1, Sigma0, pi_0)
+
+        # --- Escenario 2: Σ0 ≠ Σ1 ---
+        for n in n_grid:
+            d_mc = Riesgos(n, p, pi_0, mu0, mu1, Sigma0, Sigma1)
+            d_mc["Escenario"] = "Σ0≠Σ1"; d_mc["Dificultad"] = dif_lbl
+            frames_mc.append(d_mc)
+
+            d_cv = riesgos_cv_modelos(n, p, pi_0, mu0, mu1, Sigma0, Sigma1,
+                                      k_folds=k_folds, n_repeats=n_repeats, R=R)
+            d_cv["Escenario"] = "Σ0≠Σ1"; d_cv["Dificultad"] = dif_lbl
+            frames_cv.append(d_cv)
+
+        err_bayes[("Σ0≠Σ1", dif_lbl)] = bayes_error_montecarlo(
+            mu0, mu1, Sigma0, Sigma1, pi_0, n_sim=n_sim_bayes
+        )
+
+    df_mc = (pd.concat(frames_mc, ignore_index=True)
+               .sort_values(["Escenario","Dificultad","Modelo","n"])
+               .reset_index(drop=True))
+    df_cv = (pd.concat(frames_cv, ignore_index=True)
+               .sort_values(["Escenario","Dificultad","Modelo","n"])
+               .reset_index(drop=True))
+    return df_mc, df_cv, err_bayes
+
+
+def plot_modelo_por_dificultad(df_mc, df_cv, err_bayes_dict, 
+                               modelo, escenario, orden=("Fácil","Medio","Difícil")):
+    # Reserva margen superior desde el inicio
+    fig, axes = plt.subplots(
+        1, len(orden), figsize=(6*len(orden), 4), sharey=True, constrained_layout=False
+    )  # <-- agregado constrained_layout=False
+    if len(orden) == 1:
+        axes = [axes]
+
+    for ax, dif in zip(axes, orden):
+        d1 = df_mc[(df_mc["Modelo"]==modelo) &
+                   (df_mc["Escenario"]==escenario) &
+                   (df_mc["Dificultad"]==dif)].sort_values("n")
+        d2 = df_cv[(df_cv["Modelo"]==modelo) &
+                   (df_cv["Escenario"]==escenario) &
+                   (df_cv["Dificultad"]==dif)].sort_values("n")
+
+        if d1.empty and d2.empty:
+            ax.set_visible(False)
+            continue
+
+        # Hold-out (MC)
+        ax.plot(d1["n"], d1["mean"], "-o", label="Monte Carlo")
+        ax.errorbar(d1["n"], d1["mean"], yerr=d1["std"], fmt="none", capsize=4)
+
+        # CV estratificada
+        ax.plot(d2["n"], d2["mean"], "--x", label="CV estratificada")
+        ax.errorbar(d2["n"], d2["mean"], yerr=d2["std"], fmt="none", capsize=4)
+
+        # Error de Bayes específico (escenario, dificultad)
+        ax.axhline(err_bayes_dict[(escenario, dif)], ls="--", lw=2,
+                   color="tab:red", label="Error de Bayes")
+
+        ax.set_title(f"{dif}")
+        ax.set_xlabel("Tamaño de muestra (n)")
+        ax.set_ylabel("Riesgo estimado")
+        ax.grid(alpha=0.25)
+
+    # Leyenda y título dentro del canvas
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=3, bbox_to_anchor=(0.5, 0.98))  # <--
+    fig.suptitle(f"{modelo} — {escenario}", y=0.94)  # <-- baja un poco el suptitle
+
+    # Reserva espacio arriba para suptitle + leyenda
+    fig.tight_layout(rect=[0, 0, 1, 0.88])  
+
+    plt.show()
+
+np.random.seed(546)  
+# Parámetros del experimento
+p = 2
+pi_0 = 0.5 #balance
+Sigma0 = np.eye(p)
+Sigma1 = np.array([[1, 0.5],[0.5, 1]])
+
+# Corre todo (ambos escenarios y tres dificultades)
+df_mc, df_cv, err_bayes_dict = Resultados_MC_CV_por_dificultad(
+    p, pi_0, Sigma0, Sigma1, DIFICULTADES,
+    n_grid=(50,100,200,500), k_folds=5, R=20
+)
+
+# Una figura por clasificador y escenario, con 3 subplots (Fácil/Medio/Difícil)
+for modelo in ["LDA", "QDA", "Naive Bayes", "Fisher (1D + umbral)"]:
+    plot_modelo_por_dificultad(df_mc, df_cv, err_bayes_dict, modelo, escenario="Σ0=Σ1")
+    plot_modelo_por_dificultad(df_mc, df_cv, err_bayes_dict, modelo, escenario="Σ0≠Σ1")    
+
+# Parámetros del experimento
+p = 2
+pi_0 = 0.8 #desbalance
+Sigma0 = np.eye(p)
+Sigma1 = np.array([[1, 0.5],[0.5, 1]])
+
+# Corre todo (ambos escenarios y tres dificultades)
+df_mc, df_cv, err_bayes_dict = Resultados_MC_CV_por_dificultad(
+    p, pi_0, Sigma0, Sigma1, DIFICULTADES,
+    n_grid=(50,100,200,500), k_folds=5, R=20
+)
+
+# Una figura por clasificador y escenario, con 3 subplots (Fácil/Medio/Difícil)
+for modelo in ["LDA", "QDA", "Naive Bayes", "Fisher (1D + umbral)"]:
+    plot_modelo_por_dificultad(df_mc, df_cv, err_bayes_dict, modelo, escenario="Σ0=Σ1")
+    plot_modelo_por_dificultad(df_mc, df_cv, err_bayes_dict, modelo, escenario="Σ0≠Σ1")    
+
+
 
